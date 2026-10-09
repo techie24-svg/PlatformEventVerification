@@ -36,9 +36,27 @@ describe("toDisplayEvent", () => {
     });
 
     expect(event.objectName).toBe("Account");
+    expect(event.source).toBeNull();
+    expect(event.message).toBeNull();
     expect(event.changes).toEqual({
       changeType: "UPDATE",
       fields: { Phone: "222" },
     });
+  });
+
+  it("shows the external publisher and message when those fields are present", () => {
+    const event = toDisplayEvent({
+      topic: "/event/External_Demo__e",
+      replayId: 7,
+      receivedAt: "2026-10-09T21:00:00.000Z",
+      payload: {
+        Source__c: { string: "External service" },
+        Message__c: { string: "Phone changed to 222" },
+      },
+    });
+
+    expect(event.objectName).toBe("External service");
+    expect(event.source).toBe("External service");
+    expect(event.message).toBe("Phone changed to 222");
   });
 });

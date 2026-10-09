@@ -100,6 +100,34 @@ paths:
           $ref: "#/components/responses/Error"
         "401":
           $ref: "#/components/responses/Error"
+  /api/publish:
+    post:
+      summary: Publish one event to Salesforce as an external service
+      description: Publishes to /event/External_Demo__e using the signed-in user's Salesforce session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishRequest"
+      responses:
+        "200":
+          description: Salesforce accepted the event
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [topic, replayId]
+                properties:
+                  topic:
+                    type: string
+                    const: /event/External_Demo__e
+                  replayId:
+                    type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
 components:
   schemas:
     AuthStart:
@@ -127,6 +155,20 @@ components:
           type: integer
           minimum: 0
           nullable: true
+    PublishRequest:
+      type: object
+      additionalProperties: false
+      required: [source, message]
+      properties:
+        source:
+          type: string
+          minLength: 1
+          maxLength: 255
+          examples: [External service]
+        message:
+          type: string
+          minLength: 1
+          maxLength: 131072
   responses:
     Error:
       description: Request failed

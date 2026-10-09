@@ -20,6 +20,21 @@ export const eventRequestSchema = z.object({
   replayId: z.number().int().nonnegative().nullable().optional(),
 });
 
+export const PUBLISH_TOPIC = "/event/External_Demo__e";
+
+export const publishRequestSchema = z.object({
+  source: z
+    .string()
+    .trim()
+    .min(1, "Enter the name of the external service.")
+    .max(255),
+  message: z
+    .string()
+    .trim()
+    .min(1, "Enter the event message.")
+    .max(131072, "The message is longer than the Salesforce field allows."),
+});
+
 export function normalizeMyDomain(value: string): string {
   const url = new URL(value);
   if (

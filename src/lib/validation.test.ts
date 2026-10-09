@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeMyDomain, normalizeTopic } from "@/lib/validation";
+import {
+  normalizeMyDomain,
+  normalizeTopic,
+  publishRequestSchema,
+} from "@/lib/validation";
 
 describe("normalizeTopic", () => {
   it("accepts a platform event topic", () => {
@@ -19,6 +23,26 @@ describe("normalizeTopic", () => {
     expect(() => normalizeTopic("/data/AccountChangeEvent")).toThrow(
       "platform event topic",
     );
+  });
+});
+
+describe("publishRequestSchema", () => {
+  it("accepts a source and a message from an external publisher", () => {
+    expect(
+      publishRequestSchema.parse({
+        source: " External service ",
+        message: " Account phone changed ",
+      }),
+    ).toEqual({
+      source: "External service",
+      message: "Account phone changed",
+    });
+  });
+
+  it("rejects an empty message", () => {
+    expect(() =>
+      publishRequestSchema.parse({ source: "External service", message: " " }),
+    ).toThrow();
   });
 });
 

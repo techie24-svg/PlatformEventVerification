@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { toDisplayEvent, type DisplayEvent } from "@/lib/event-utils";
+import { PUBLISH_TOPIC } from "@/lib/validation";
 
 type Session =
   | { authenticated: false }
@@ -39,6 +40,10 @@ export function EventConsole() {
   const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [listening, setListening] = useState(false);
+  const [source, setSource] = useState("External service");
+  const [message, setMessage] = useState("Phone changed to (201) 555-0199");
+  const [publishing, setPublishing] = useState(false);
+  const [publishedReplayId, setPublishedReplayId] = useState<string | null>(null);
   const listeningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const replayIdRef = useRef<number | null>(null);
@@ -98,6 +103,35 @@ export function EventConsole() {
     setSession({ authenticated: false });
     setEvents([]);
     replayIdRef.current = null;
+  }
+
+  async function publish(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPublishing(true);
+    setError(null);
+    setPublishedReplayId(null);
+    try {
+      const response = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source, message }),
+      });
+      const data = (await response.json()) as {
+        replayId?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.replayId) {
+        if (response.status === 401) {
+          setSession({ authenticated: false });
+        }
+        throw new Error(data.error || "Salesforce did not accept the event.");
+      }
+      setPublishedReplayId(data.replayId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Publish failed.");
+    } finally {
+      setPublishing(false);
+    }
   }
 
   async function start() {
@@ -267,14 +301,51 @@ export function EventConsole() {
               <span>{status}</span>
             </div>
 
-            <div className="demo-note">
-              <strong>Demo behavior</strong>
-              <p>
-                Vercel opens 50-second subscription windows and reconnects using
-                the latest replay ID. A production service should keep one gRPC
-                stream open continuously.
+            <form className="publish-panel" onSubmit={publish}>
+              <div className="eyebrow">External publisher</div>
+              <label className="field-label" htmlFor="source">
+                Source
+              </label>
+              <input
+                id="source"
+                className="input"
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+                maxLength={255}
+                required
+              />
+              <label className="field-label" htmlFor="message">
+                Message
+              </label>
+              <textarea
+                id="message"
+                className="input textarea"
+                value={message}
+                onChange={(event) => setMessage(event.target.value)}
+                required
+              />
+              <p className="hint">
+                Publishes to <code>{PUBLISH_TOPIC}</code>. Listen on that topic
+                to see Salesforce accept it.
               </p>
-            </div>
+              <button className="button primary" disabled={publishing}>
+                {publishing ? "Publishing…" : "Publish event"}
+              </button>
+              {!listening && (
+                <button
+                  className="button ghost listen-topic"
+                  type="button"
+                  onClick={() => setTopic(PUBLISH_TOPIC)}
+                >
+                  Listen on this topic
+                </button>
+              )}
+              {publishedReplayId && (
+                <p className="publish-result">
+                  Salesforce accepted the event. Replay ID {publishedReplayId}.
+                </p>
+              )}
+            </form>
           </aside>
 
           <section className="feed">
@@ -390,6 +461,8 @@ function EventCard({ event }: { event: DisplayEvent }) {
           <Identity label="External ID" value={event.changes.externalId} />
         </div>
       )}
+
+      {event.message && <p className="external-message">{event.message}</p>}
 
       {fields && Object.keys(fields).length > 0 && (
         <div className="changes">

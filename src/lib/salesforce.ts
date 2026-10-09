@@ -1,6 +1,7 @@
 import PubSubApiClient from "salesforce-pubsub-api-client";
 
 import type { SalesforceSession } from "@/lib/session";
+import { PUBLISH_TOPIC } from "@/lib/validation";
 
 type TokenResponse = {
   access_token: string;
@@ -88,6 +89,23 @@ export function createPubSubClient(session: SalesforceSession): PubSubApiClient 
       error: () => undefined,
     },
   );
+}
+
+export async function publishExternalEvent(
+  session: SalesforceSession,
+  input: { source: string; message: string },
+): Promise<string> {
+  const client = createPubSubClient(session);
+  try {
+    await client.connect();
+    const result = await client.publish(PUBLISH_TOPIC, {
+      Source__c: input.source,
+      Message__c: input.message,
+    });
+    return String(result.replayId);
+  } finally {
+    client.close();
+  }
 }
 
 export function jsonSafe(value: unknown): unknown {

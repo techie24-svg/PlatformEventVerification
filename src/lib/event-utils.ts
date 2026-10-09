@@ -6,6 +6,8 @@ export type DisplayEvent = {
   objectName: string;
   payload: Record<string, unknown>;
   changes: Record<string, unknown> | null;
+  source: string | null;
+  message: string | null;
 };
 
 export function toDisplayEvent(input: {
@@ -20,9 +22,14 @@ export function toDisplayEvent(input: {
     topic: input.topic,
     replayId: input.replayId,
     receivedAt: input.receivedAt,
-    objectName: stringValue(payload.Object__c) || "Platform event",
+    objectName:
+      stringValue(payload.Object__c) ||
+      stringValue(payload.Source__c) ||
+      "Platform event",
     payload,
     changes: parseChanges(payload.Changes__c),
+    source: stringValue(payload.Source__c),
+    message: stringValue(payload.Message__c),
   };
 }
 
