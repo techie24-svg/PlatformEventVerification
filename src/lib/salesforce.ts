@@ -1,7 +1,10 @@
 import PubSubApiClient from "salesforce-pubsub-api-client";
 
+import {
+  EXTERNAL_EVENT_TOPIC,
+  externalEventPayload,
+} from "@/lib/external-event";
 import type { SalesforceSession } from "@/lib/session";
-import { PUBLISH_TOPIC } from "@/lib/validation";
 
 type TokenResponse = {
   access_token: string;
@@ -95,17 +98,30 @@ export async function publishExternalEvent(
   session: SalesforceSession,
   input: { source: string; message: string },
 ): Promise<string> {
+  const createdById = await salesforceUserId(session);
   const client = createPubSubClient(session);
   try {
     await client.connect();
-    const result = await client.publish(PUBLISH_TOPIC, {
-      Source__c: input.source,
-      Message__c: input.message,
-    });
+    const result = await client.publish(
+      EXTERNAL_EVENT_TOPIC,
+      externalEventPayload({ ...input, createdById }),
+    );
     return String(result.replayId);
   } finally {
     client.close();
   }
+}
+
+async function salesforceUserId(session: SalesforceSession): Promise<string> {
+  const response = await fetch(`${session.instanceUrl}/services/oauth2/userinfo`, {
+    headers: { authorization: `Bearer ${session.accessToken}` },
+    cache: "no-store",
+  });
+  const data = (await response.json()) as { user_id?: string; error?: string };
+  if (!response.ok || !data.user_id) {
+    throw new Error(data.error || "Salesforce did not return the signed-in user.");
+  }
+  return data.user_id;
 }
 
 export function jsonSafe(value: unknown): unknown {

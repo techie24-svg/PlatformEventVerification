@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 
+import { errorText } from "@/lib/external-event";
 import { publishExternalEvent } from "@/lib/salesforce";
 import {
   SESSION_COOKIE,
@@ -45,10 +46,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Salesforce did not accept the event.",
+        error: errorText(error, "Salesforce did not accept the event."),
       },
       { status: 502 },
     );

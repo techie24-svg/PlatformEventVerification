@@ -20,7 +20,7 @@ export const eventRequestSchema = z.object({
   replayId: z.number().int().nonnegative().nullable().optional(),
 });
 
-export const PUBLISH_TOPIC = "/event/External_Demo__e";
+export { EXTERNAL_EVENT_TOPIC as PUBLISH_TOPIC } from "@/lib/external-event";
 
 export const publishRequestSchema = z.object({
   source: z
