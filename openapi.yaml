@@ -1,0 +1,140 @@
+openapi: 3.1.0
+info:
+  title: Platform Event Verification API
+  version: 1.0.0
+  description: Demo API for authenticating to Salesforce and streaming a Platform Event topic.
+servers:
+  - url: /
+paths:
+  /api/auth/start:
+    post:
+      summary: Start Salesforce OAuth authorization with PKCE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthStart"
+      responses:
+        "200":
+          description: Salesforce authorization URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizeUrl]
+                properties:
+                  authorizeUrl:
+                    type: string
+                    format: uri
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/auth/callback:
+    get:
+      summary: Exchange the Salesforce authorization code and create an encrypted session
+      parameters:
+        - in: query
+          name: code
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: state
+          required: true
+          schema:
+            type: string
+      responses:
+        "307":
+          description: Redirect to the event viewer
+        "400":
+          $ref: "#/components/responses/Error"
+  /api/auth/logout:
+    post:
+      summary: Remove the local encrypted session
+      responses:
+        "204":
+          description: Logged out
+  /api/session:
+    get:
+      summary: Return non-sensitive Salesforce session information
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [authenticated]
+                    properties:
+                      authenticated:
+                        const: false
+                  - type: object
+                    required: [authenticated, instanceUrl, organizationId]
+                    properties:
+                      authenticated:
+                        const: true
+                      instanceUrl:
+                        type: string
+                        format: uri
+                      organizationId:
+                        type: string
+  /api/events:
+    post:
+      summary: Open a short Salesforce Pub/Sub subscription window
+      description: Returns newline-delimited JSON. The browser reconnects using the latest replay ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventRequest"
+      responses:
+        "200":
+          description: NDJSON stream containing status, event, keepalive, error and end records
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+components:
+  schemas:
+    AuthStart:
+      type: object
+      additionalProperties: false
+      required: [myDomainUrl, clientId]
+      properties:
+        myDomainUrl:
+          type: string
+          format: uri
+          examples: [https://example--sandbox.sandbox.my.salesforce.com]
+        clientId:
+          type: string
+          description: Consumer key from a Salesforce External Client App
+    EventRequest:
+      type: object
+      additionalProperties: false
+      required: [topic]
+      properties:
+        topic:
+          type: string
+          pattern: ^/event/[A-Za-z][A-Za-z0-9_]*__e$
+          examples: [/event/Avantos_Integration__e]
+        replayId:
+          type: integer
+          minimum: 0
+          nullable: true
+  responses:
+    Error:
+      description: Request failed
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: string

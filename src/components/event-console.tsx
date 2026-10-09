@@ -1,0 +1,457 @@
+"use client";
+
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import { toDisplayEvent, type DisplayEvent } from "@/lib/event-utils";
+
+type Session =
+  | { authenticated: false }
+  | { authenticated: true; instanceUrl: string; organizationId: string };
+
+type WireMessage =
+  | { type: "status"; message: string }
+  | {
+      type: "event";
+      topic: string;
+      replayId: number;
+      receivedAt: string;
+      payload: unknown;
+    }
+  | { type: "keepalive"; replayId: number | null }
+  | { type: "end"; replayId: number | null }
+  | { type: "error"; message: string };
+
+const DEFAULT_TOPIC = "/event/Avantos_Integration__e";
+
+export function EventConsole() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [myDomainUrl, setMyDomainUrl] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [topic, setTopic] = useState(DEFAULT_TOPIC);
+  const [events, setEvents] = useState<DisplayEvent[]>([]);
+  const [status, setStatus] = useState("Ready");
+  const [error, setError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [listening, setListening] = useState(false);
+  const listeningRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const replayIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const queryError = new URLSearchParams(window.location.search).get("error");
+    if (queryError) {
+      queueMicrotask(() => setError(queryError));
+      window.history.replaceState({}, "", "/");
+    }
+    fetch("/api/session", { cache: "no-store" })
+      .then((response) => response.json() as Promise<Session>)
+      .then(setSession)
+      .catch(() => {
+        setSession({ authenticated: false });
+        setError("Could not read the local session.");
+      });
+  }, []);
+
+  const stop = useCallback(() => {
+    listeningRef.current = false;
+    setListening(false);
+    setStatus("Stopped");
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
+  useEffect(() => stop, [stop]);
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setConnecting(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/auth/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ myDomainUrl, clientId }),
+      });
+      const data = (await response.json()) as {
+        authorizeUrl?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.authorizeUrl) {
+        throw new Error(data.error || "Could not start Salesforce login.");
+      }
+      window.location.assign(data.authorizeUrl);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Login failed.");
+      setConnecting(false);
+    }
+  }
+
+  async function signOut() {
+    stop();
+    await fetch("/api/auth/logout", { method: "POST" });
+    setSession({ authenticated: false });
+    setEvents([]);
+    replayIdRef.current = null;
+  }
+
+  async function start() {
+    setError(null);
+    setEvents([]);
+    replayIdRef.current = null;
+    listeningRef.current = true;
+    setListening(true);
+    setStatus("Connecting");
+
+    while (listeningRef.current) {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        const response = await fetch("/api/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            topic,
+            replayId: replayIdRef.current,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          const data = (await response.json()) as { error?: string };
+          if (response.status === 401) {
+            setSession({ authenticated: false });
+          }
+          throw new Error(data.error || "Subscription failed.");
+        }
+        await readMessages(response.body);
+        if (listeningRef.current) {
+          setStatus("Reconnecting");
+          await delay(350);
+        }
+      } catch (caught) {
+        if (controller.signal.aborted) {
+          break;
+        }
+        listeningRef.current = false;
+        setListening(false);
+        setStatus("Error");
+        setError(
+          caught instanceof Error ? caught.message : "Subscription failed.",
+        );
+      }
+    }
+  }
+
+  async function readMessages(stream: ReadableStream<Uint8Array>) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (listeningRef.current) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (line.trim()) {
+          handleMessage(JSON.parse(line) as WireMessage);
+        }
+      }
+    }
+  }
+
+  function handleMessage(message: WireMessage) {
+    if (message.type === "status") {
+      setStatus("Listening");
+      return;
+    }
+    if (message.type === "event") {
+      replayIdRef.current = message.replayId;
+      setEvents((current) => [
+        toDisplayEvent(message),
+        ...current,
+      ].slice(0, 100));
+      setStatus("Event received");
+      return;
+    }
+    if (message.type === "keepalive" || message.type === "end") {
+      if (message.replayId != null) {
+        replayIdRef.current = message.replayId;
+      }
+      return;
+    }
+    throw new Error(message.message);
+  }
+
+  if (session === null) {
+    return <LoadingScreen />;
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            PE
+          </span>
+          <div>
+            <strong>Platform Event Verification</strong>
+            <span>Salesforce Pub/Sub demo console</span>
+          </div>
+        </div>
+        {session.authenticated && (
+          <button className="button ghost" onClick={signOut}>
+            Disconnect
+          </button>
+        )}
+      </header>
+
+      {!session.authenticated ? (
+        <LoginPanel
+          clientId={clientId}
+          connecting={connecting}
+          error={error}
+          myDomainUrl={myDomainUrl}
+          onClientIdChange={setClientId}
+          onDomainChange={setMyDomainUrl}
+          onSubmit={signIn}
+        />
+      ) : (
+        <section className="workspace">
+          <aside className="sidebar">
+            <div className="eyebrow">Connected org</div>
+            <div className="org-card">
+              <span className="signal-dot" aria-hidden="true" />
+              <div>
+                <strong>{new URL(session.instanceUrl).hostname}</strong>
+                <span>{session.organizationId}</span>
+              </div>
+            </div>
+
+            <label className="field-label" htmlFor="topic">
+              Event subscription
+            </label>
+            <input
+              id="topic"
+              className="input mono"
+              value={topic}
+              onChange={(event) => setTopic(event.target.value)}
+              placeholder={DEFAULT_TOPIC}
+              disabled={listening}
+            />
+            <p className="hint">
+              Paste the Salesforce topic path. Platform event topics start with
+              <code>/event/</code>.
+            </p>
+
+            <button
+              className={`button primary ${listening ? "danger" : ""}`}
+              onClick={listening ? stop : start}
+            >
+              {listening ? "Stop listening" : "Start listening"}
+            </button>
+
+            <div className="status-row">
+              <span
+                className={`status-light ${listening ? "live" : ""}`}
+                aria-hidden="true"
+              />
+              <span>{status}</span>
+            </div>
+
+            <div className="demo-note">
+              <strong>Demo behavior</strong>
+              <p>
+                Vercel opens 50-second subscription windows and reconnects using
+                the latest replay ID. A production service should keep one gRPC
+                stream open continuously.
+              </p>
+            </div>
+          </aside>
+
+          <section className="feed">
+            <div className="feed-heading">
+              <div>
+                <div className="eyebrow">Live event stream</div>
+                <h1>Incoming changes</h1>
+              </div>
+              <span className="event-count">{events.length} events</span>
+            </div>
+
+            {error && <Alert message={error} />}
+            {events.length === 0 ? (
+              <EmptyState listening={listening} />
+            ) : (
+              <div className="event-list">
+                {events.map((event) => (
+                  <EventCard event={event} key={event.id} />
+                ))}
+              </div>
+            )}
+          </section>
+        </section>
+      )}
+    </main>
+  );
+}
+
+function LoginPanel(props: {
+  clientId: string;
+  connecting: boolean;
+  error: string | null;
+  myDomainUrl: string;
+  onClientIdChange: (value: string) => void;
+  onDomainChange: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <section className="login-wrap">
+      <div className="login-copy">
+        <div className="eyebrow">Live integration demo</div>
+        <h1>See Salesforce events the moment they happen.</h1>
+        <p>
+          Connect an org, subscribe to a platform event topic, and inspect each
+          decoded payload in real time.
+        </p>
+        <ol className="steps">
+          <li><span>1</span>Authenticate with Salesforce OAuth</li>
+          <li><span>2</span>Paste an event topic</li>
+          <li><span>3</span>Change a record and watch the event arrive</li>
+        </ol>
+      </div>
+
+      <form className="login-card" onSubmit={props.onSubmit}>
+        <div>
+          <div className="eyebrow">Connect your org</div>
+          <h2>Salesforce authentication</h2>
+          <p>Uses Authorization Code with PKCE. No client secret is required.</p>
+        </div>
+        {props.error && <Alert message={props.error} />}
+        <label className="field-label" htmlFor="domain">My Domain URL</label>
+        <input
+          id="domain"
+          className="input"
+          type="url"
+          required
+          value={props.myDomainUrl}
+          onChange={(event) => props.onDomainChange(event.target.value)}
+          placeholder="https://example--sandbox.sandbox.my.salesforce.com"
+        />
+        <label className="field-label" htmlFor="client-id">Consumer key</label>
+        <input
+          id="client-id"
+          className="input mono"
+          required
+          value={props.clientId}
+          onChange={(event) => props.onClientIdChange(event.target.value)}
+          placeholder="3MVG9..."
+          autoComplete="off"
+        />
+        <button className="button primary" disabled={props.connecting}>
+          {props.connecting ? "Opening Salesforce…" : "Connect Salesforce"}
+        </button>
+        <p className="security-note">
+          Tokens are encrypted in an HTTP-only cookie and are never exposed to
+          browser JavaScript.
+        </p>
+      </form>
+    </section>
+  );
+}
+
+function EventCard({ event }: { event: DisplayEvent }) {
+  const fields =
+    event.changes && typeof event.changes.fields === "object"
+      ? (event.changes.fields as Record<string, unknown>)
+      : null;
+  return (
+    <article className="event-card">
+      <div className="event-meta">
+        <div>
+          <span className="object-pill">{event.objectName}</span>
+          <strong>{event.changes?.changeType?.toString() || "EVENT"}</strong>
+        </div>
+        <time dateTime={event.receivedAt}>
+          {new Date(event.receivedAt).toLocaleTimeString()}
+        </time>
+      </div>
+
+      {event.changes && (
+        <div className="identity-grid">
+          <Identity label="Salesforce ID" value={event.changes.salesforceId} />
+          <Identity label="External ID" value={event.changes.externalId} />
+        </div>
+      )}
+
+      {fields && Object.keys(fields).length > 0 && (
+        <div className="changes">
+          {Object.entries(fields).map(([name, value]) => (
+            <div className="change-row" key={name}>
+              <code>{name}</code>
+              <span>{displayValue(value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details>
+        <summary>Raw event payload</summary>
+        <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+      </details>
+      <div className="replay">Replay ID {event.replayId}</div>
+    </article>
+  );
+}
+
+function Identity({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <span>{label}</span>
+      <code>{displayValue(value)}</code>
+    </div>
+  );
+}
+
+function EmptyState({ listening }: { listening: boolean }) {
+  return (
+    <div className="empty-state">
+      <div className="pulse-rings" aria-hidden="true"><span /></div>
+      <h2>{listening ? "Listening for changes" : "No events yet"}</h2>
+      <p>
+        {listening
+          ? "Update an Account in Salesforce. The event will appear here."
+          : "Start the listener, then make a Salesforce change."}
+      </p>
+    </div>
+  );
+}
+
+function Alert({ message }: { message: string }) {
+  return <div className="alert" role="alert">{message}</div>;
+}
+
+function LoadingScreen() {
+  return (
+    <main className="loading-screen">
+      <span className="spinner" aria-label="Loading" />
+    </main>
+  );
+}
+
+function displayValue(value: unknown): string {
+  if (value == null) return "null";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
