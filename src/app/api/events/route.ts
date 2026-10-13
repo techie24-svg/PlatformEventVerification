@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { trackStreamingCalls } from "@/lib/grpc-calls";
+import { callTracker } from "@/lib/grpc-calls";
 import {
   managedFallbackReason,
   managedSubscriptionName,
@@ -27,6 +27,8 @@ const COMMIT_DELAY_MS = 250;
 const COMMIT_FLUSH_MS = 500;
 // Commit responses also arrive as keepalives with an ever-advancing replay ID.
 const KEEPALIVE_COMMIT_INTERVAL_MS = 30_000;
+// grpc-js reports a cancellation on the next tick; the client must keep its listeners until then.
+const CLOSE_AFTER_CANCEL_MS = 100;
 const GRPC_ALREADY_EXISTS = 6;
 const GRPC_UNAVAILABLE = 14;
 const encoder = new TextEncoder();
@@ -57,8 +59,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const client = createPubSubClient(session);
-  const calls = trackStreamingCalls();
+  const calls = callTracker();
+  const client = createPubSubClient(session, [calls.interceptor]);
+  const shutDown = () => {
+    calls.cancelAll();
+    setTimeout(() => client.close(), CLOSE_AFTER_CANCEL_MS);
+  };
   try {
     await client.connect();
   } catch (error) {
@@ -96,8 +102,7 @@ export async function POST(request: NextRequest) {
         closed = true;
         clearTimeout(commitTimer);
         clearTimeout(windowTimer);
-        calls.cancelAll();
-        client.close();
+        shutDown();
         controller.close();
       };
       const commit = (replayId: number | null) => {
@@ -180,9 +185,7 @@ export async function POST(request: NextRequest) {
       const subscription = managedSubscriptionName(input.topic);
       let tracking: Tracking;
       try {
-        await calls.run(() =>
-          client.subscribeWithManagedSubscription(subscription, callback, null),
-        );
+        await client.subscribeWithManagedSubscription(subscription, callback, null);
         tracking = { mode: "managed", subscription };
       } catch (error) {
         tracking = {
@@ -190,18 +193,16 @@ export async function POST(request: NextRequest) {
           subscription,
           reason: managedFallbackReason(subscription, error),
         };
-        calls.run(() => {
-          if (input.replayId == null) {
-            client.subscribe(input.topic, callback, null);
-          } else {
-            client.subscribeFromReplayId(
-              input.topic,
-              callback,
-              null,
-              input.replayId,
-            );
-          }
-        });
+        if (input.replayId == null) {
+          client.subscribe(input.topic, callback, null);
+        } else {
+          client.subscribeFromReplayId(
+            input.topic,
+            callback,
+            null,
+            input.replayId,
+          );
+        }
       }
       send({
         type: "status",
@@ -228,8 +229,7 @@ export async function POST(request: NextRequest) {
       closed = true;
       clearTimeout(commitTimer);
       clearTimeout(windowTimer);
-      calls.cancelAll();
-      client.close();
+      shutDown();
     },
   });
 

@@ -1,3 +1,4 @@
+import type { Interceptor } from "@grpc/grpc-js";
 import PubSubApiClient from "salesforce-pubsub-api-client";
 
 import {
@@ -77,7 +78,10 @@ function organizationIdFromIdentityUrl(identityUrl: string): string {
   return organizationId;
 }
 
-export function createPubSubClient(session: SalesforceSession): PubSubApiClient {
+export function createPubSubClient(
+  session: SalesforceSession,
+  interceptors: Interceptor[] = [],
+): PubSubApiClient {
   return new PubSubApiClient(
     {
       authType: "user-supplied",
@@ -88,6 +92,7 @@ export function createPubSubClient(session: SalesforceSession): PubSubApiClient 
         "grpc.keepalive_time_ms": 30_000,
         "grpc.keepalive_timeout_ms": 10_000,
         "grpc.keepalive_permit_without_calls": 1,
+        interceptors,
       },
     },
     {

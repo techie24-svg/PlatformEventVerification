@@ -39,7 +39,8 @@ type WireMessage =
 const DEFAULT_TOPIC = "/event/Avantos_Integration__e";
 const LISTENING_KEY = "pev:listening";
 const OFFLINE_RETRY_MS = 15_000;
-const BUSY_RETRY_MS = 5_000;
+// Salesforce takes a few seconds to release a managed subscription after a window closes.
+const BUSY_RETRY_MS = 2_000;
 
 class RetryableStreamError extends Error {}
 
@@ -223,7 +224,7 @@ export function EventConsole() {
           continue;
         }
         if (caught instanceof RetryableStreamError) {
-          setStatus("Salesforce is still closing the last connection. Retrying");
+          setStatus("Reconnecting");
           await delay(BUSY_RETRY_MS);
           continue;
         }
