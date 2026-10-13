@@ -486,6 +486,34 @@ code,
   font-weight: 800;
 }
 
+.offline-pill {
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #fff4e5;
+  color: #b54708;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.event-card.offline::before {
+  background: #f79009;
+}
+
+.event-counts {
+  display: flex;
+  gap: 8px;
+}
+
+.event-count.offline {
+  background: #fff4e5;
+  color: #b54708;
+}
+
+.demo-note code {
+  margin: 0 3px;
+  color: var(--ink);
+}
+
 .identity-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -3,6 +3,8 @@ export type DisplayEvent = {
   topic: string;
   replayId: number;
   receivedAt: string;
+  publishedAt: string | null;
+  publishedWhileOffline: boolean;
   objectName: string;
   payload: Record<string, unknown>;
   changes: Record<string, unknown> | null;
@@ -15,13 +17,20 @@ export function toDisplayEvent(input: {
   replayId: number;
   receivedAt: string;
   payload: unknown;
+  listeningSince?: number;
 }): DisplayEvent {
   const payload = isRecord(input.payload) ? input.payload : {};
+  const publishedAt = createdDate(payload.CreatedDate);
   return {
     id: `${input.replayId}-${input.receivedAt}`,
     topic: input.topic,
     replayId: input.replayId,
     receivedAt: input.receivedAt,
+    publishedAt,
+    publishedWhileOffline:
+      publishedAt != null &&
+      input.listeningSince != null &&
+      Date.parse(publishedAt) < input.listeningSince,
     objectName:
       stringValue(payload.Object__c) ||
       stringValue(payload.Source__c) ||
@@ -44,6 +53,19 @@ export function parseChanges(value: unknown): Record<string, unknown> | null {
   } catch {
     return { value: raw };
   }
+}
+
+export function createdDate(value: unknown): string | null {
+  const raw = unwrapNullable(value);
+  const milliseconds =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^\d+$/.test(raw)
+        ? Number(raw)
+        : Number.NaN;
+  return Number.isFinite(milliseconds) && milliseconds > 0
+    ? new Date(milliseconds).toISOString()
+    : null;
 }
 
 function stringValue(value: unknown): string | null {

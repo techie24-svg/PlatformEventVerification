@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.6",
     "jose": "^6.2.12",
     "next": "16.4.0",
     "react": "19.3.0",

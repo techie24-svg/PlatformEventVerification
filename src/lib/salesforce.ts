@@ -13,11 +13,16 @@ type TokenResponse = {
   id: string;
 };
 
+export type Tracking =
+  | { mode: "managed"; subscription: string }
+  | { mode: "unmanaged"; subscription: string; reason: string };
+
 export type StreamMessage =
-  | { type: "status"; message: string }
+  | { type: "status"; message: string; tracking: Tracking }
   | { type: "event"; topic: string; replayId: number; receivedAt: string; payload: unknown }
   | { type: "keepalive"; replayId: number | null }
-  | { type: "error"; message: string }
+  | { type: "commit"; replayId: number; committedAt: string }
+  | { type: "error"; message: string; retryable: boolean }
   | { type: "end"; replayId: number | null };
 
 export async function exchangeAuthorizationCode(input: {

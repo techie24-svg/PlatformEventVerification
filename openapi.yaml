@@ -82,7 +82,11 @@ paths:
   /api/events:
     post:
       summary: Open a short Salesforce Pub/Sub subscription window
-      description: Returns newline-delimited JSON. The browser reconnects using the latest replay ID.
+      description: >-
+        Returns newline-delimited JSON. When a managed event subscription named
+        PEV_<event name> exists, the window subscribes through it and commits the
+        replay ID of each delivered event, so Salesforce resumes after the last
+        commit. Otherwise the browser reconnects using the latest replay ID.
       requestBody:
         required: true
         content:
@@ -91,7 +95,9 @@ paths:
               $ref: "#/components/schemas/EventRequest"
       responses:
         "200":
-          description: NDJSON stream containing status, event, keepalive, error and end records
+          description: >-
+            NDJSON stream containing status (with the tracking mode), event,
+            keepalive, commit, error (with a retryable flag) and end records
           content:
             application/x-ndjson:
               schema:

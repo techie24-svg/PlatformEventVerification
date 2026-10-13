@@ -4,6 +4,7 @@ import {
   FormEvent,
   useCallback,
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
 } from "react";
@@ -15,8 +16,14 @@ type Session =
   | { authenticated: false }
   | { authenticated: true; instanceUrl: string; organizationId: string };
 
+type Tracking =
+  | { mode: "managed"; subscription: string }
+  | { mode: "unmanaged"; subscription: string; reason: string };
+
+type Commit = { replayId: number; committedAt: string };
+
 type WireMessage =
-  | { type: "status"; message: string }
+  | { type: "status"; message: string; tracking: Tracking }
   | {
       type: "event";
       topic: string;
@@ -25,10 +32,16 @@ type WireMessage =
       payload: unknown;
     }
   | { type: "keepalive"; replayId: number | null }
+  | ({ type: "commit" } & Commit)
   | { type: "end"; replayId: number | null }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; retryable: boolean };
 
 const DEFAULT_TOPIC = "/event/Avantos_Integration__e";
+const LISTENING_KEY = "pev:listening";
+const OFFLINE_RETRY_MS = 15_000;
+const BUSY_RETRY_MS = 5_000;
+
+class RetryableStreamError extends Error {}
 
 export function EventConsole() {
   const [session, setSession] = useState<Session | null>(null);
@@ -44,9 +57,25 @@ export function EventConsole() {
   const [message, setMessage] = useState("Phone changed to (201) 555-0199");
   const [publishing, setPublishing] = useState(false);
   const [publishedReplayId, setPublishedReplayId] = useState<string | null>(null);
+  const [tracking, setTracking] = useState<Tracking | null>(null);
+  const [committed, setCommitted] = useState<Commit | null>(null);
+  const [receivedCount, setReceivedCount] = useState(0);
+  const [offlineCount, setOfflineCount] = useState(0);
   const listeningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const replayIdRef = useRef<number | null>(null);
+  const listeningSinceRef = useRef(0);
+  const seenReplayIdsRef = useRef(new Set<number>());
+
+  const resumeListening = useEffectEvent((current: Session) => {
+    const savedTopic = current.authenticated
+      ? window.localStorage.getItem(LISTENING_KEY)
+      : null;
+    if (savedTopic && !listeningRef.current) {
+      setTopic(savedTopic);
+      void start(savedTopic);
+    }
+  });
 
   useEffect(() => {
     const queryError = new URLSearchParams(window.location.search).get("error");
@@ -56,22 +85,30 @@ export function EventConsole() {
     }
     fetch("/api/session", { cache: "no-store" })
       .then((response) => response.json() as Promise<Session>)
-      .then(setSession)
+      .then((current) => {
+        setSession(current);
+        resumeListening(current);
+      })
       .catch(() => {
         setSession({ authenticated: false });
         setError("Could not read the local session.");
       });
   }, []);
 
-  const stop = useCallback(() => {
+  const disconnect = useCallback(() => {
     listeningRef.current = false;
-    setListening(false);
-    setStatus("Stopped");
     abortRef.current?.abort();
     abortRef.current = null;
   }, []);
 
-  useEffect(() => stop, [stop]);
+  const stop = useCallback(() => {
+    disconnect();
+    window.localStorage.removeItem(LISTENING_KEY);
+    setListening(false);
+    setStatus("Stopped");
+  }, [disconnect]);
+
+  useEffect(() => disconnect, [disconnect]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -102,6 +139,8 @@ export function EventConsole() {
     await fetch("/api/auth/logout", { method: "POST" });
     setSession({ authenticated: false });
     setEvents([]);
+    setTracking(null);
+    setCommitted(null);
     replayIdRef.current = null;
   }
 
@@ -134,11 +173,18 @@ export function EventConsole() {
     }
   }
 
-  async function start() {
+  async function start(topicToUse = topic) {
     setError(null);
     setEvents([]);
+    setTracking(null);
+    setCommitted(null);
+    setReceivedCount(0);
+    setOfflineCount(0);
     replayIdRef.current = null;
+    seenReplayIdsRef.current = new Set();
+    listeningSinceRef.current = Date.now();
     listeningRef.current = true;
+    window.localStorage.setItem(LISTENING_KEY, topicToUse);
     setListening(true);
     setStatus("Connecting");
 
@@ -150,7 +196,7 @@ export function EventConsole() {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            topic,
+            topic: topicToUse,
             replayId: replayIdRef.current,
           }),
           signal: controller.signal,
@@ -170,6 +216,16 @@ export function EventConsole() {
       } catch (caught) {
         if (controller.signal.aborted) {
           break;
+        }
+        if (isNetworkFailure(caught)) {
+          setStatus("Offline. Resumes when the connection returns");
+          await waitForConnection(OFFLINE_RETRY_MS);
+          continue;
+        }
+        if (caught instanceof RetryableStreamError) {
+          setStatus("Salesforce is still closing the last connection. Retrying");
+          await delay(BUSY_RETRY_MS);
+          continue;
         }
         listeningRef.current = false;
         setListening(false);
@@ -204,16 +260,33 @@ export function EventConsole() {
 
   function handleMessage(message: WireMessage) {
     if (message.type === "status") {
+      setTracking(message.tracking);
       setStatus("Listening");
       return;
     }
     if (message.type === "event") {
       replayIdRef.current = message.replayId;
-      setEvents((current) => [
-        toDisplayEvent(message),
-        ...current,
-      ].slice(0, 100));
+      if (seenReplayIdsRef.current.has(message.replayId)) {
+        return;
+      }
+      seenReplayIdsRef.current.add(message.replayId);
+      const event = toDisplayEvent({
+        ...message,
+        listeningSince: listeningSinceRef.current,
+      });
+      setEvents((current) => [event, ...current].slice(0, 100));
+      setReceivedCount((count) => count + 1);
+      if (event.publishedWhileOffline) {
+        setOfflineCount((count) => count + 1);
+      }
       setStatus("Event received");
+      return;
+    }
+    if (message.type === "commit") {
+      setCommitted({
+        replayId: message.replayId,
+        committedAt: message.committedAt,
+      });
       return;
     }
     if (message.type === "keepalive" || message.type === "end") {
@@ -222,7 +295,9 @@ export function EventConsole() {
       }
       return;
     }
-    throw new Error(message.message);
+    throw message.retryable
+      ? new RetryableStreamError(message.message)
+      : new Error(message.message);
   }
 
   if (session === null) {
@@ -288,7 +363,7 @@ export function EventConsole() {
 
             <button
               className={`button primary ${listening ? "danger" : ""}`}
-              onClick={listening ? stop : start}
+              onClick={listening ? stop : () => void start()}
             >
               {listening ? "Stop listening" : "Start listening"}
             </button>
@@ -300,6 +375,8 @@ export function EventConsole() {
               />
               <span>{status}</span>
             </div>
+
+            {tracking && <TrackingNote tracking={tracking} committed={committed} />}
 
             <form className="publish-panel" onSubmit={publish}>
               <div className="eyebrow">External publisher</div>
@@ -354,7 +431,14 @@ export function EventConsole() {
                 <div className="eyebrow">Live event stream</div>
                 <h1>Incoming changes</h1>
               </div>
-              <span className="event-count">{events.length} events</span>
+              <div className="event-counts">
+                {offlineCount > 0 && (
+                  <span className="event-count offline">
+                    {offlineCount} published while offline
+                  </span>
+                )}
+                <span className="event-count">{receivedCount} received</span>
+              </div>
             </div>
 
             {error && <Alert message={error} />}
@@ -444,14 +528,18 @@ function EventCard({ event }: { event: DisplayEvent }) {
       ? (event.changes.fields as Record<string, unknown>)
       : null;
   return (
-    <article className="event-card">
+    <article className={`event-card ${event.publishedWhileOffline ? "offline" : ""}`}>
       <div className="event-meta">
         <div>
           <span className="object-pill">{event.objectName}</span>
           <strong>{event.changes?.changeType?.toString() || "EVENT"}</strong>
+          {event.publishedWhileOffline && (
+            <span className="offline-pill">Published while offline</span>
+          )}
         </div>
         <time dateTime={event.receivedAt}>
-          {new Date(event.receivedAt).toLocaleTimeString()}
+          {event.publishedAt && `Published ${clockTime(event.publishedAt)} · `}
+          Received {clockTime(event.receivedAt)}
         </time>
       </div>
 
@@ -507,6 +595,42 @@ function EmptyState({ listening }: { listening: boolean }) {
   );
 }
 
+function TrackingNote({
+  tracking,
+  committed,
+}: {
+  tracking: Tracking;
+  committed: Commit | null;
+}) {
+  if (tracking.mode === "unmanaged") {
+    return (
+      <div className="demo-note">
+        <strong>Not tracked by Salesforce</strong>
+        <p>
+          {tracking.reason} Events published while this app is offline are
+          skipped. Deploy a managed subscription named
+          <code>{tracking.subscription}</code> to keep them.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="demo-note">
+      <strong>Salesforce tracks what this app consumed</strong>
+      <p>
+        Managed subscription <code>{tracking.subscription}</code>. When the app
+        comes back online, Salesforce sends every event published after the
+        last one the app committed, for up to 72 hours.
+      </p>
+      <p>
+        {committed
+          ? `Last commit: replay ID ${committed.replayId} at ${clockTime(committed.committedAt)}.`
+          : "Nothing committed in this session yet."}
+      </p>
+    </div>
+  );
+}
+
 function Alert({ message }: { message: string }) {
   return <div className="alert" role="alert">{message}</div>;
 }
@@ -525,6 +649,29 @@ function displayValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function clockTime(isoTime: string): string {
+  return new Date(isoTime).toLocaleTimeString();
+}
+
 function delay(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isNetworkFailure(error: unknown): boolean {
+  return !navigator.onLine || error instanceof TypeError;
+}
+
+function waitForConnection(timeoutMilliseconds: number) {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      window.removeEventListener("online", done);
+      resolve();
+    };
+    const timer = setTimeout(
+      done,
+      navigator.onLine ? 2_000 : timeoutMilliseconds,
+    );
+    window.addEventListener("online", done, { once: true });
+  });
 }

@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["salesforce-pubsub-api-client"],
+  serverExternalPackages: ["salesforce-pubsub-api-client", "@grpc/grpc-js"],
   async headers() {
     return [
       {
